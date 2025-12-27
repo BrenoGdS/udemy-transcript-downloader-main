@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Output files
+output/*
+!output/.gitkeep
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# OS specific files
+.DS_Store
+Thumbs.db
