@@ -4,11 +4,6 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
-const dotenv = require('dotenv');
-
-// Load environment variables
-dotenv.config();
-
 // Apply stealth plugin to avoid detection
 puppeteerExtra.use(StealthPlugin());
 
@@ -41,6 +36,8 @@ async function main() {
     courseUrl += '/';
   }
 
+  const courseSlug = deriveCourseSlug(courseUrl);
+
   console.log(`Course URL: ${courseUrl}`);
 
   const downloadSrt = await new Promise((resolve) => {
@@ -57,10 +54,10 @@ async function main() {
     });
   });
 
-  // Launch browser in headless mode
+  // Launch browser in visible mode to allow manual SSO login (Okta/Google, etc.)
   console.log('Launching browser...');
   const browser = await puppeteerExtra.launch({
-    headless: 'new', // Use the new headless mode
+    headless: false,
     defaultViewport: null,
     args: [
       '--window-size=1280,720',
@@ -76,96 +73,17 @@ async function main() {
     const page = await browser.newPage();
     await new Promise(resolve => setTimeout(resolve, 1000));
 
-    // Navigate to login page
-    console.log('Navigating to login page...');
-    let loginPageLoaded = false;
-    for (let attempt = 0; attempt < 2 && !loginPageLoaded; attempt++) {
-      try {
-        await page.goto('https://www.udemy.com/join/passwordless-auth', { waitUntil: 'domcontentloaded' });
-        loginPageLoaded = true;
-      } catch (err) {
-        if (err.message.includes('frame was detached')) {
-          console.warn('Frame was detached, retrying navigation...');
-          await new Promise(resolve => setTimeout(resolve, 1000));
-        } else {
-          throw err;
-        }
-      }
-    }
-
-    // Check if email is configured
-    if (!process.env.UDEMY_EMAIL) {
-      console.error('UDEMY_EMAIL not found in .env file. Please configure your credentials.');
-      process.exit(1);
-    }
-
-    console.log('Processing login...');
-
-    // Wait a few seconds before filling the email input
-    await new Promise(resolve => setTimeout(resolve, 3000));
-
-    // Fill in the email input
-    await page.waitForSelector('input[name="email"]');
-    await page.type('input[name="email"]', process.env.UDEMY_EMAIL, { delay: 100 });
-
-    // Close the cookie bar if it exists
-    try {
-      // Check if cookie bar exists
-      const cookieButtonExists = await page.evaluate(() => {
-        return !!document.getElementById('onetrust-accept-btn-handler');
-      });
-
-      if (cookieButtonExists) {
-        await page.$eval('#onetrust-accept-btn-handler', element => element.click());
-        console.log('Closed cookie bar');
-      }
-    } catch (error) {
-      console.log('Cookie bar not found or could not be closed');
-    }
-
-    // Submit the login form
-    await page.$eval('[data-purpose="code-generation-form"] [type="submit"]', element => element.click());
-    console.log('Email submitted, waiting for verification code...');
-
-    // Ask user for verification code in terminal
-    console.log('You have 5 minutes to enter the verification code before the program times out.');
-    const verificationCode = await new Promise((resolve) => {
-      rl.question('Please enter the 6-digit verification code from your email: ', (code) => {
-        resolve(code.trim());
-      });
-    });
-
-    // Fill in the verification code
-    await page.waitForSelector('[data-purpose="otp-text-area"] input', { timeout: 60000 });
-    await page.type('[data-purpose="otp-text-area"] input', verificationCode, { delay: 100 });
-
-    // Submit the verification form
-    await page.$eval('[data-purpose="otp-verification-form"] [type="submit"]', element => element.click());
-    console.log('Verification submitted, completing login...');
-
-    // Wait for redirect after successful login with a longer timeout
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    console.log('Login successful!');
-
-    // Navigate to course page
-    console.log(`Navigating to course page: ${courseUrl}`);
-    await page.goto(courseUrl, { waitUntil: 'networkidle2' });
+    // Manual login flow for Udemy Business / SSO (Okta, Google Authenticator, etc.)
+    console.log('Opening course page for manual login...');
+    const courseOrigin = new URL(courseUrl).origin;
+    const courseId = await waitForManualLogin(page, courseUrl, courseOrigin, courseSlug);
 
     // Extract course ID
-    console.log('Extracting course ID...');
-    const courseId = await page.evaluate(() => {
-      return document.querySelector("body[data-clp-course-id]").getAttribute("data-clp-course-id");
-    });
-
-    if (!courseId) {
-      throw new Error('Could not retrieve course ID. Make sure you are logged in and the course URL is correct.');
-    }
-
     console.log(`Course ID: ${courseId}`);
 
     // Fetch course content
     console.log('Fetching course content...');
-    const apiUrl = `https://www.udemy.com/api-2.0/courses/${courseId}/subscriber-curriculum-items/?page_size=200&fields%5Blecture%5D=title,object_index,is_published,sort_order,created,asset,supplementary_assets,is_free&fields%5Bquiz%5D=title,object_index,is_published,sort_order,type&fields%5Bpractice%5D=title,object_index,is_published,sort_order&fields%5Bchapter%5D=title,object_index,is_published,sort_order&fields%5Basset%5D=title,filename,asset_type,status,time_estimation,is_external,transcript,captions&caching_intent=True`;
+    const apiUrl = `${courseOrigin}/api-2.0/courses/${courseId}/subscriber-curriculum-items/?page_size=200&fields%5Blecture%5D=title,object_index,is_published,sort_order,created,asset,supplementary_assets,is_free&fields%5Bquiz%5D=title,object_index,is_published,sort_order,type&fields%5Bpractice%5D=title,object_index,is_published,sort_order&fields%5Bchapter%5D=title,object_index,is_published,sort_order&fields%5Basset%5D=title,filename,asset_type,status,time_estimation,is_external,transcript,captions&caching_intent=True`;
 
     let courseJson = null;
     const maxAttempts = 3;
@@ -220,6 +138,98 @@ async function main() {
     await browser.close();
     rl.close();
   }
+}
+
+// Wait for user-driven authentication on Udemy Business / SSO and return course ID
+async function waitForManualLogin(page, courseUrl, courseOrigin, courseSlug) {
+  console.log('\nManual login required (Okta / Google Authenticator / SSO).');
+  console.log('1) Use the opened browser window to sign in.');
+  console.log('2) After you reach the course page, come back here and press Enter.');
+
+  // Navigate to the course URL (this may redirect to your IdP)
+  await page.goto(courseUrl, { waitUntil: 'domcontentloaded' });
+
+  await new Promise(resolve => rl.question('Press Enter once the course page is visible and you are logged in: ', resolve));
+
+  const maxAttempts = 3;
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    console.log(`Validating course access (attempt ${attempt}/${maxAttempts})...`);
+    try {
+      await page.goto(courseUrl, { waitUntil: 'networkidle2', timeout: 120000 });
+      await new Promise(res => setTimeout(res, 2000));
+
+      const courseId = await extractCourseId(page, courseOrigin, courseSlug);
+      if (courseId) {
+        return courseId;
+      }
+
+      console.warn('Course ID not found yet. Confirm you are on the course page and logged in, then press Enter to retry.');
+      await new Promise(resolve => rl.question('Press Enter to try again: ', resolve));
+    } catch (err) {
+      lastError = err;
+      console.warn(`Navigation error: ${err.message}`);
+      await new Promise(resolve => rl.question('After fixing the issue in the browser, press Enter to retry: ', resolve));
+    }
+  }
+
+  const errorMessage = lastError ? lastError.message : 'Unknown issue loading the course page.';
+  throw new Error(`Could not verify course access after manual login. ${errorMessage}`);
+}
+
+// Extract course ID from the currently loaded page
+async function extractCourseId(page, courseOrigin, courseSlug) {
+  // 1) Try DOM attribute
+  const domCourseId = await page.evaluate(() => {
+    const el = document.querySelector('body[data-clp-course-id]');
+    return el ? el.getAttribute('data-clp-course-id') : null;
+  });
+  if (domCourseId) return domCourseId;
+
+  // 2) Try Udemy bootstrap object
+  const bootstrapId = await page.evaluate(() => {
+    try {
+      // eslint-disable-next-line no-underscore-dangle
+      const boot = window.__udemy__ && window.__udemy__.bootstrap;
+      if (boot && boot.data && boot.data.courseId) return String(boot.data.courseId);
+    } catch (_err) {
+      // ignore
+    }
+    return null;
+  });
+  if (bootstrapId) return bootstrapId;
+
+  // 3) Fallback: query course API by slug on same origin using session cookies
+  try {
+    const apiUrl = `${courseOrigin}/api-2.0/courses/${courseSlug}/?fields[course]=id`;
+    const result = await page.evaluate(async (url) => {
+      const res = await fetch(url, { credentials: 'include' });
+      if (!res.ok) return null;
+      const json = await res.json();
+      return json && json.id ? String(json.id) : null;
+    }, apiUrl);
+    if (result) return result;
+  } catch (err) {
+    console.warn(`Failed to fetch course ID via API: ${err.message}`);
+  }
+
+  return null;
+}
+
+// Derive slug from course URL (/course/<slug>/...)
+function deriveCourseSlug(courseUrl) {
+  try {
+    const url = new URL(courseUrl);
+    const parts = url.pathname.split('/').filter(Boolean);
+    const courseIndex = parts.indexOf('course');
+    if (courseIndex >= 0 && parts[courseIndex + 1]) {
+      return parts[courseIndex + 1];
+    }
+  } catch (_err) {
+    // ignore
+  }
+  return '';
 }
 
 // Process course structure

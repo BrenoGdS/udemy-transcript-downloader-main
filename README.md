@@ -2,6 +2,8 @@
 
 A NodeJS-based tool for downloading transcripts from Udemy courses. This script uses Puppeteer to navigate through Udemy's UI and extract transcripts for each lecture in a course.
 
+> Fork de TOA-Anakin/udemy-transcript-downloader com adaptações para Udemy Business/SSO.
+
 ## Features
 
 - Downloads transcripts from any Udemy course you have access to
@@ -9,9 +11,9 @@ A NodeJS-based tool for downloading transcripts from Udemy courses. This script 
 - Generates a combined transcript file with all lectures
 - Optionally downloads `.srt` files with timestamps for each lecture
 - Scrapes and saves course content structure
-- Supports email-based authentication with verification code
+- Works with Udemy Business after manual login (Okta/Google Authenticator/SSO)
 - Handles Cloudflare security challenges
-- Runs in headless mode for better performance
+- Uses a visible browser window so you can complete SSO, then automates the rest
 
 ## Prerequisites
 
@@ -32,11 +34,6 @@ A NodeJS-based tool for downloading transcripts from Udemy courses. This script 
    npm install
    ```
 
-3. Create a `.env` file in the root directory with your Udemy email:
-   ```
-   UDEMY_EMAIL=your-email@example.com
-   ```
-
 ## Usage
 
 Run the script with the URL of the Udemy course as an argument:
@@ -51,19 +48,21 @@ Or use the direct Node.js command:
 node src/index.js "https://www.udemy.com/course/your-course-url/"
 ```
 
+For Udemy Business, pass your organization domain, for example:
+
+```
+npm start "https://thoughtworks.udemy.com/course/aws-dynamodb-mastery-2025/"
+```
+
 The script will:
 
 1. Ask if you want to download `.srt` files (with timestamps) for each lecture
 2. Ask how many tabs to use for downloading transcripts (default is 5)
    - A higher number can speed things up, but requires a good PC (enough CPU and RAM)
-3. Open a headless browser and navigate to Udemy login
-4. Fill in your email from the .env file
-5. Ask you to enter the 6-digit verification code from your email
-6. Navigate to the course page
-7. Scrape course content structure
-8. Enter the course player
-9. Go through each lecture and download available transcripts
-10. Save individual transcript files in the `output` directory
+3. Open a visible browser window so you can log in manually (Udemy Business / Okta / Google Authenticator / SSO)
+4. After you complete login and reach the course page, press Enter in the terminal to continue
+5. The script will scrape course content, enter the course player, and download transcripts
+6. Individual transcript files are saved in the `output` directory
 
 ## Output Files
 
