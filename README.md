@@ -2,7 +2,7 @@
 
 A NodeJS-based tool for downloading transcripts from Udemy courses. This script uses Puppeteer to navigate through Udemy's UI and extract transcripts for each lecture in a course.
 
-> Fork de TOA-Anakin/udemy-transcript-downloader com adaptações para Udemy Business/SSO.
+> Fork of TOA-Anakin/udemy-transcript-downloader with adaptations for Udemy Business/SSO.
 
 ## Features
 
