@@ -81,46 +81,14 @@ async function main() {
     // Extract course ID
     console.log(`Course ID: ${courseId}`);
 
-    // Fetch course content
+    // Fetch course content (with pagination to avoid missing items)
     console.log('Fetching course content...');
-    const apiUrl = `${courseOrigin}/api-2.0/courses/${courseId}/subscriber-curriculum-items/?page_size=200&fields%5Blecture%5D=title,object_index,is_published,sort_order,created,asset,supplementary_assets,is_free&fields%5Bquiz%5D=title,object_index,is_published,sort_order,type&fields%5Bpractice%5D=title,object_index,is_published,sort_order&fields%5Bchapter%5D=title,object_index,is_published,sort_order&fields%5Basset%5D=title,filename,asset_type,status,time_estimation,is_external,transcript,captions&caching_intent=True`;
-
-    let courseJson = null;
-    const maxAttempts = 3;
-
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      console.log(`Attempt ${attempt} to fetch course content...`);
-      try {
-        await page.goto(apiUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-        const rawBody = await page.evaluate(() => document.body.innerText);
-
-        if (rawBody.trim().startsWith('<!DOCTYPE html>')) {
-          throw new Error('HTML response received instead of JSON');
-        }
-
-        courseJson = JSON.parse(rawBody);
-
-        if (courseJson && courseJson.results) {
-          break; // success
-        } else {
-          throw new Error('JSON parsed but no results key found');
-        }
-      } catch (err) {
-        console.warn(`[Attempt ${attempt}] Failed to fetch course content: ${err.message}`);
-        if (attempt < maxAttempts) {
-          console.log('Retrying in 5 seconds...');
-          await new Promise(resolve => setTimeout(resolve, 5000));
-        } else {
-          throw new Error('Could not retrieve course content. Make sure you have access to this course and try again.');
-        }
-      }
-    }
+    const courseResults = await fetchCourseCurriculum(page, courseOrigin, courseId);
+    console.log(`Fetched ${courseResults.length} curriculum items.`);
 
     // Process course structure
     console.log('Processing course structure...');
-    const courseStructure = processCourseStructure(courseJson.results);
+    const courseStructure = processCourseStructure(courseResults);
 
     // Generate CONTENTS.txt
     console.log('Generating CONTENTS.txt...');
@@ -138,6 +106,46 @@ async function main() {
     await browser.close();
     rl.close();
   }
+}
+
+// Fetch full curriculum with pagination (page_size=200)
+async function fetchCourseCurriculum(page, courseOrigin, courseId) {
+  const baseUrl = `${courseOrigin}/api-2.0/courses/${courseId}/subscriber-curriculum-items/?page_size=200&fields%5Blecture%5D=title,object_index,is_published,sort_order,created,asset,supplementary_assets,is_free&fields%5Bquiz%5D=title,object_index,is_published,sort_order,type&fields%5Bpractice%5D=title,object_index,is_published,sort_order&fields%5Bchapter%5D=title,object_index,is_published,sort_order&fields%5Basset%5D=title,filename,asset_type,status,time_estimation,is_external,transcript,captions&caching_intent=True`;
+  let url = baseUrl;
+  const results = [];
+  const maxPages = 20; // safety guard
+
+  for (let pageIndex = 1; pageIndex <= maxPages && url; pageIndex++) {
+    console.log(`Fetching curriculum page ${pageIndex}...`);
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 90000 });
+    await new Promise(res => setTimeout(res, 1500));
+
+    const rawBody = await page.evaluate(() => document.body.innerText);
+    if (rawBody.trim().startsWith('<!DOCTYPE html>')) {
+      throw new Error('HTML response received instead of JSON while fetching curriculum');
+    }
+
+    let json = null;
+    try {
+      json = JSON.parse(rawBody);
+    } catch (err) {
+      throw new Error(`Failed to parse curriculum JSON on page ${pageIndex}: ${err.message}`);
+    }
+
+    if (!json || !Array.isArray(json.results)) {
+      throw new Error(`Curriculum response missing results on page ${pageIndex}`);
+    }
+
+    results.push(...json.results);
+
+    if (json.next) {
+      url = json.next.startsWith('http') ? json.next : `${courseOrigin}${json.next}`;
+    } else {
+      url = null;
+    }
+  }
+
+  return results;
 }
 
 // Wait for user-driven authentication on Udemy Business / SSO and return course ID
@@ -393,10 +401,17 @@ async function processLecture(page, courseUrl, lecture, chapter = null, download
 
   // Sanitize filename by removing invalid characters
   const sanitizedFilename = filename.replace(/[/\\?%*:|"<>]/g, '-');
+  const transcriptPath = path.join(__dirname, '../output', `${sanitizedFilename}.txt`);
 
   console.log(`Processing lecture: ${sanitizedFilename}`);
 
   try {
+    // Resume support: skip if transcript already exists
+    if (fs.existsSync(transcriptPath)) {
+      console.log(`Skipping (already exists): ${sanitizedFilename}`);
+      return;
+    }
+
     // Navigate to lecture page with a longer timeout
     await page.goto(lectureUrl, {
       waitUntil: 'networkidle2',
@@ -505,7 +520,7 @@ async function processLecture(page, courseUrl, lecture, chapter = null, download
     const fileContent = `# ${sanitizedFilename}\n\n${transcriptText}`;
 
     // Write to file
-    fs.writeFileSync(path.join(__dirname, '../output', `${sanitizedFilename}.txt`), fileContent, 'utf8');
+    fs.writeFileSync(transcriptPath, fileContent, 'utf8');
     console.log(`Transcript saved for: ${sanitizedFilename}`);
 
     await new Promise(resolve => setTimeout(resolve, 500));
